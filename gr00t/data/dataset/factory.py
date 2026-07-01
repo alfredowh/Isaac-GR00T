@@ -78,7 +78,6 @@ class DatasetFactory:
                     dataset_path=dataset_path,
                     embodiment_tag=EmbodimentTag(embodiment_tag),
                     modality_configs=self.config.data.modality_configs[embodiment_tag],
-                    decoder_kwargs=self.config.data.decoder_kwargs,
                     shard_size=self.config.data.shard_size,
                     episode_sampling_rate=self.config.data.episode_sampling_rate,
                     seed=self.config.data.seed,

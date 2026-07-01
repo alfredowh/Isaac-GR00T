@@ -23,11 +23,8 @@ import torch
 import tyro
 
 from gr00t.configs.base_config import get_default_config
-# from gr00t.configs.finetune_config import FinetuneConfig
-from config.GR00T.finetune_config import FinetuneConfig
-from .experiment import run
-from config.GR00T.finetune_config import FinetuneConfig
-
+from gr00t.configs.finetune_config import FinetuneConfig
+from gr00t.experiment.experiment import run
 
 # Make sure the user provided modality config is registered.
 def load_modality_config(modality_config_path: str):
@@ -126,6 +123,8 @@ if __name__ == "__main__":
     config.training.save_best_eval_metric_greater_is_better = (
         ft_config.save_best_eval_metric_greater_is_better
     )
+    config.training.enable_open_loop_eval = ft_config.enable_open_loop_eval
+    config.training.open_loop_eval_num_traj_ids = ft_config.open_loop_eval_num_traj_ids
     config.training.weight_decay = ft_config.weight_decay
     config.training.warmup_ratio = ft_config.warmup_ratio
     config.training.wandb_project = ft_config.wandb_project
