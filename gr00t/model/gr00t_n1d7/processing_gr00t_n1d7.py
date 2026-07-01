@@ -152,10 +152,16 @@ class Gr00tN1d7DataCollator:
 
     def __call__(self, features: list[Dict[str, Any]]) -> BatchFeature:
         batch = {}
+        top_level = {}
         keys = list(set().union(*(elem.keys() for elem in features)))
 
         for key in keys:
             values = [elem[key] for elem in features if key in elem]
+            # Workaround: Force Trainer.evaluate to return eval_loss
+            if key == "return_loss":
+                # Keep Trainer control flags at the top-level batch, not in model inputs.
+                top_level[key] = bool(values[0]) if values else False
+                continue
             if key == "vlm_content":
                 # Handle vlm_content specially - extract text and images
                 text_list = []
