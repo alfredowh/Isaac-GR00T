@@ -159,9 +159,46 @@ class FinetuneConfig:
     The project is `finetune-gr00t-n1d7`.
     You need to login to wandb to view the logs.
     """
+    
+    report_to: str | None = None
+    """
+    Reporting backend for training metrics.  Accepts any value supported by
+    HuggingFace TrainingArguments.report_to, e.g. "tensorboard", "wandb",
+    "none".  When set, this takes precedence over --use-wandb.
+    If not set, falls back to "wandb" when --use-wandb is True, else "none".
+    """
+
+    mlflow_tracking_uri: str | None = "sqlite:///mlflow.db"
+    """
+    URI of the MLflow tracking server (e.g. "http://localhost:5000" or a local
+    path like "file:./mlruns").  Maps to the MLFLOW_TRACKING_URI environment
+    variable consumed by MLflowCallback.  Ignored when report_to != "mlflow".
+    """
+    
+    mlflow_run_id: str | None = None
+    """ID of the MLflow run. Maps to the MLFLOW_RUN_ID environment variable 
+    consumed by MLflowCallback. Ignored when report_to != "mlflow"."""
 
     max_steps: int = 10000
     """Total number of training steps to run before stopping."""
+
+    eval_strategy: str = "no"
+    """Evaluation schedule: one of "no", "steps", or "epoch"."""
+
+    eval_steps: int = 500
+    """Run evaluation every N update steps when eval_strategy="steps"."""
+
+    eval_batch_size: int = 2
+    """Per-device batch size used by evaluation dataloader."""
+
+    eval_set_split_ratio: float = 0.1
+    """Fraction of shards held out for validation when evaluation is enabled."""
+
+    save_best_eval_metric_name: str = ""
+    """Metric key to track for best checkpoint saving, e.g. "eval_loss"."""
+
+    save_best_eval_metric_greater_is_better: bool = True
+    """Whether a higher metric value is better when tracking best checkpoints."""
 
     weight_decay: float = 1e-5
     """Weight decay coefficient for optimizer (L2 regularization)."""

@@ -113,6 +113,8 @@ class TrainingConfig:
     # Experiment tracking
     use_wandb: bool = False
     wandb_project: str = "finetune-gr00t-n1d7"
+    report_to: str | None = None
+    """Override logging backend for HuggingFace Trainer (e.g. "tensorboard", "wandb", "none")."""
 
     # Profiling
     enable_profiling: bool = False

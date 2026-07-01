@@ -173,6 +173,25 @@ class Gr00tTrainer(Trainer):
         super().log(logs, start_time=start_time)
         self.state.epoch = epoch
 
+    def _build_dataloader(self, dataset, batch_size: int, description: str):
+        data_collator = self._get_collator_with_removed_columns(
+            self.data_collator, description=description
+        )
+        persistent_workers = self.args.dataloader_num_workers > 0
+
+        dataloader_params = {
+            "batch_size": batch_size,
+            "collate_fn": data_collator,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": persistent_workers,
+        }
+
+        if self.args.dataloader_num_workers > 0:
+            dataloader_params["multiprocessing_context"] = self.multiprocessing_context
+
+        return torch.utils.data.DataLoader(dataset, **dataloader_params)
+
     def get_train_dataloader(self):  # noqa: D401
         """Return a iterable dataloader without skipping the data during resume, but reseed the dataset instead."""
 
@@ -195,27 +214,28 @@ class Gr00tTrainer(Trainer):
             )
 
         print("Creating custom train dataloader")
-        # Handle the case where the dataset is an IterableDataset
-        data_collator = self.data_collator
-        data_collator = self._get_collator_with_removed_columns(
-            data_collator, description="training"
+        return self._build_dataloader(
+            self.train_dataset,
+            batch_size=self._train_batch_size,
+            description="training",
         )
-        # Use persistent workers for sharded dataset if num_workers is greater than 0
-        persistent_workers = self.args.dataloader_num_workers > 0
 
-        dataloader_params = {
-            "batch_size": self._train_batch_size,
-            "collate_fn": data_collator,
-            "num_workers": self.args.dataloader_num_workers,
-            "pin_memory": self.args.dataloader_pin_memory,
-            "persistent_workers": persistent_workers,
-        }
+    def get_eval_dataloader(self, eval_dataset=None):  # noqa: D401
+        dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
+        if dataset is None:
+            raise ValueError("Trainer: evaluation requires an eval_dataset.")
+        return self._build_dataloader(
+            dataset,
+            batch_size=self.args.eval_batch_size,
+            description="evaluation",
+        )
 
-        # multiprocessing_context can only be used with num_workers > 0
-        if self.args.dataloader_num_workers > 0:
-            dataloader_params["multiprocessing_context"] = self.multiprocessing_context
-
-        return torch.utils.data.DataLoader(self.train_dataset, **dataloader_params)
+    def get_test_dataloader(self, test_dataset):  # noqa: D401
+        return self._build_dataloader(
+            test_dataset,
+            batch_size=self.args.eval_batch_size,
+            description="test",
+        )
 
     def train(
         self,
@@ -265,6 +285,9 @@ class Gr00tTrainer(Trainer):
         by calling it with ``return_outputs=True``.  After obtaining the loss
         *and* model outputs, we calculate accuracy and push it to the logger.
         """
+
+        # Remove return_loss keys preventing model forward error
+        inputs.pop("return_loss", None)
 
         # Use parent implementation to preserve built-in functionality.
         loss, outputs = super().compute_loss(

@@ -423,7 +423,8 @@ class ShardedMixtureDataset(IterableDataset):
         self.cache_next_shard()
         rng = np.random.default_rng(self.seed + self.epoch)
 
-        # Continuous iteration with epoch management
+        # Training iterates indefinitely; evaluation runs one finite pass over
+        # the precomputed worker shard schedule so Trainer.evaluate can finish.
         while True:
             self.curr_shard_index += 1
 
@@ -437,8 +438,11 @@ class ShardedMixtureDataset(IterableDataset):
                 f"Rank {self.rank}, Worker {self.worker_id}: Wait for shard {shard_index} in dataset {dataset_index} in {wait_end - wait_start:.2f} seconds"
             )
 
-            # Start caching next shard immediately
-            self.cache_next_shard()
+            # Start caching next shard immediately. For eval, stop after one
+            # full pass instead of rolling over to shard 0 again.
+            has_next_shard = self.curr_shard_index + 1 < len(self.worker_shard_sampling_schedule)
+            if self.training or has_next_shard:
+                self.cache_next_shard()
 
             # Yield shuffled timesteps from current shard
             assert self.curr_shard is not None
@@ -450,19 +454,27 @@ class ShardedMixtureDataset(IterableDataset):
             # Clean up cached shard to free memory
             self.delete_cached_shard()
 
+            if not self.training and not has_next_shard:
+                break
+
     def cache_next_shard(self):
         """
         Start background caching of the next shard using ThreadPoolExecutor.
 
         Handles epoch transitions by regenerating the sampling schedule when
-        the current schedule is exhausted.
+        the current schedule is exhausted (training mode only).
         """
         assert self._executor is not None
         # Check if epoch is complete and regenerate schedule if needed
         if self.curr_shard_index + 1 >= len(self.worker_shard_sampling_schedule):
             self.epoch += 1
             self.shard_sampling_schedule = self.generate_shard_sampling_schedule()
-            self.worker_shard_sampling_schedule = self.filter_shard_sample_schedule()
+            
+            # Unstable workaround: Filter shard sample schedule only on training mode 
+            if self.training:
+                self.worker_shard_sampling_schedule = self.filter_shard_sample_schedule()
+            else:
+                self.worker_shard_sampling_schedule = self.shard_sampling_schedule
             self.curr_shard_index = -1
 
         print(f"Rank {self.rank}, Worker {self.worker_id}: Caching shard...")
