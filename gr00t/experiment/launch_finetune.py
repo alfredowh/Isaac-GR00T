@@ -19,12 +19,14 @@
 import json
 import os
 from pathlib import Path
-
+import torch
 import tyro
 
 from gr00t.configs.base_config import get_default_config
-from gr00t.configs.finetune_config import FinetuneConfig
-from gr00t.experiment.experiment import run
+# from gr00t.configs.finetune_config import FinetuneConfig
+from config.GR00T.finetune_config import FinetuneConfig
+from .experiment import run
+from config.GR00T.finetune_config import FinetuneConfig
 
 
 # Make sure the user provided modality config is registered.
@@ -95,7 +97,9 @@ if __name__ == "__main__":
     else:
         config.model.extra_augmentation_config = None
 
-    config.model.load_bf16 = False
+    # Keep model load dtype aligned with training precision to avoid
+    # FlashAttention2 running against fp32-initialized backbones.
+    config.model.load_bf16 = bool(config.training.bf16)
     config.model.reproject_vision = False
     config.model.model_name = "nvidia/Cosmos-Reason2-2B"
     config.model.backbone_trainable_params_fp32 = True
@@ -114,9 +118,18 @@ if __name__ == "__main__":
     config.training.num_gpus = ft_config.num_gpus
     config.training.use_wandb = ft_config.use_wandb
     config.training.max_steps = ft_config.max_steps
+    config.training.eval_strategy = ft_config.eval_strategy 
+    config.training.eval_steps = ft_config.eval_steps
+    config.training.eval_batch_size = ft_config.eval_batch_size
+    config.training.eval_set_split_ratio = ft_config.eval_set_split_ratio
+    config.training.save_best_eval_metric_name = ft_config.save_best_eval_metric_name
+    config.training.save_best_eval_metric_greater_is_better = (
+        ft_config.save_best_eval_metric_greater_is_better
+    )
     config.training.weight_decay = ft_config.weight_decay
     config.training.warmup_ratio = ft_config.warmup_ratio
     config.training.wandb_project = ft_config.wandb_project
+    config.training.report_to = ft_config.report_to
 
     config.data.shard_size = ft_config.shard_size
     config.data.episode_sampling_rate = ft_config.episode_sampling_rate
@@ -126,5 +139,15 @@ if __name__ == "__main__":
     config.training.save_only_model = ft_config.save_only_model
     config.training.resume_from_checkpoint = ft_config.resume_from_checkpoint
     config.training.skip_weight_loading = ft_config.skip_weight_loading
+
+    # Configure MLflowCallback via environment variables when report_to includes mlflow.
+    # MLflowCallback reads these env vars inside its setup() method.
+    report_to_val = ft_config.report_to or ""
+    if "mlflow" in report_to_val:
+        if ft_config.mlflow_tracking_uri is not None:
+            os.environ.setdefault("MLFLOW_TRACKING_URI", ft_config.mlflow_tracking_uri)
+        experiment_name = ft_config.experiment_name or os.path.basename(ft_config.output_dir)
+        if experiment_name is not None:
+            os.environ.setdefault("MLFLOW_EXPERIMENT_NAME", experiment_name)
 
     run(config)
