@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import logging
+import os
 
 import torch
 from transformers.feature_extraction_utils import BatchFeature
@@ -147,6 +148,15 @@ class Qwen3Backbone(torch.nn.Module):
                 extra_kwargs["attn_implementation"] = "sdpa"
         if load_bf16:
             extra_kwargs["torch_dtype"] = torch.bfloat16
+        
+        # Resolve HF model ID to local cache path to avoid any network calls.
+        if not os.path.isdir(model_name):
+            try:
+                from huggingface_hub import snapshot_download
+
+                model_name = snapshot_download(model_name, local_files_only=True)
+            except Exception:
+                pass
 
         self.model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_name,

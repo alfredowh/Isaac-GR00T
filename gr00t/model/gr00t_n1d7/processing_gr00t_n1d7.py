@@ -126,6 +126,13 @@ def build_processor(model_name: str, transformers_loading_kwargs: dict) -> Qwen3
             "Qwen3VLProcessor is not available. "
             "Please upgrade transformers: pip install transformers>=4.52.0"
         )
+    if not os.path.isdir(model_name):
+        try:
+            from huggingface_hub import snapshot_download
+
+            model_name = snapshot_download(model_name, local_files_only=True)
+        except Exception:
+            pass  # Fall through and let from_pretrained handle it
     return Qwen3VLProcessor.from_pretrained(model_name, **transformers_loading_kwargs)
 
 
@@ -178,7 +185,7 @@ class Gr00tN1d7DataCollator:
             else:
                 # state, state_mask, action and action_mask - stack to form batch dimension
                 batch[key] = torch.from_numpy(np.stack(values))
-        return BatchFeature(data={"inputs": batch})
+        return BatchFeature(data={"inputs": batch, **top_level})
 
     def __str__(self):
         return f"Gr00tN1d7DataCollator(model_name={self.model_name}, model_type={self.model_type})"
