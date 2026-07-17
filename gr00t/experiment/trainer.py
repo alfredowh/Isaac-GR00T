@@ -173,7 +173,7 @@ class Gr00tTrainer(Trainer):
         super().log(logs, start_time=start_time)
         self.state.epoch = epoch
 
-    def _build_dataloader(self, dataset, batch_size: int, description: str):
+    def _build_dataloader(self, dataset, batch_size: int, description: str, num_workers: int = None):
         data_collator = self._get_collator_with_removed_columns(
             self.data_collator, description=description
         )
@@ -182,7 +182,7 @@ class Gr00tTrainer(Trainer):
         dataloader_params = {
             "batch_size": batch_size,
             "collate_fn": data_collator,
-            "num_workers": self.args.dataloader_num_workers,
+            "num_workers": num_workers if num_workers is not None else self.args.dataloader_num_workers,
             "pin_memory": self.args.dataloader_pin_memory,
             "persistent_workers": persistent_workers,
         }
@@ -228,6 +228,7 @@ class Gr00tTrainer(Trainer):
             dataset,
             batch_size=self.args.eval_batch_size,
             description="evaluation",
+            num_workers=1   # TODO: multi-GPU and multi-worker handling for shards on validation mode
         )
 
     def get_test_dataloader(self, test_dataset):  # noqa: D401
