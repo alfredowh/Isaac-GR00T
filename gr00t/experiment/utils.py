@@ -14,8 +14,11 @@
 # limitations under the License.
 
 import logging
+import os
 from pathlib import Path
 import shutil
+import time
+from datetime import datetime, timezone
 
 import torch
 import torch.distributed as dist
@@ -70,19 +73,54 @@ class CheckpointFormatCallback(TrainerCallback):
         run_name: str,
         exp_cfg_dir: Path | None = None,
         processor_dir: Path | None = None,
+        timing_log_filename: str = "checkpoint_time_log.csv",
     ):
         """
         Args:
             run_name: Name of the experiment run
             exp_cfg_dir: Path to the directory containing all experiment metadata
         """
+        self.run_name = run_name
         self.exp_cfg_dir = exp_cfg_dir
         self.processor_dir = processor_dir
+        self.timing_log_filename = timing_log_filename
+        self._start_monotonic = time.monotonic()
+
+    def _append_checkpoint_time_log(self, output_dir: Path, checkpoint_dir: Path, global_step: int):
+        """Append one checkpoint timing row to a durable CSV log.
+
+        The file is created automatically when missing and appended thereafter.
+        We flush + fsync each write to reduce data loss on abrupt crashes.
+        """
+        log_path = output_dir / self.timing_log_filename
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        now = datetime.now(timezone.utc).isoformat()
+        elapsed_seconds = time.monotonic() - self._start_monotonic
+        header = "timestamp_utc,run_name,global_step,checkpoint_dir,elapsed_seconds\n"
+        row = (
+            f"{now},{self.run_name},{global_step},{checkpoint_dir.name},{elapsed_seconds:.6f}\n"
+        )
+
+        with open(log_path, "a", encoding="utf-8") as f:
+            if log_path.stat().st_size == 0:
+                f.write(header)
+            f.write(row)
+            f.flush()
+            os.fsync(f.fileno())
+
+        logger.info("Appended checkpoint timing log entry to %s", log_path)
 
     def on_save(self, args, state, control, **kwargs):
         """Called after the trainer saves a checkpoint."""
         if state.is_world_process_zero:
             checkpoint_dir = Path(args.output_dir) / f"checkpoint-{state.global_step}"
+
+            self._append_checkpoint_time_log(
+                output_dir=Path(args.output_dir),
+                checkpoint_dir=checkpoint_dir,
+                global_step=state.global_step,
+            )
 
             # Copy experiment config directory if provided
             if self.exp_cfg_dir is not None:
