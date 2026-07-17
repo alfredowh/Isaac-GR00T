@@ -25,6 +25,7 @@ class TrainingConfig:
     # Output
     output_dir: str = "./outputs"
     experiment_name: Optional[str] = None
+    run_name: Optional[str] = None
 
     # Basic training
     max_steps: int = 30000  # this will override num_epochs

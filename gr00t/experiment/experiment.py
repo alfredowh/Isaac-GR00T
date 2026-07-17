@@ -269,7 +269,7 @@ def run(config: Config):
         gradient_checkpointing=config.training.gradient_checkpointing,
         optim=config.training.optim,
         dataloader_num_workers=config.training.dataloader_num_workers,
-        report_to="wandb" if config.training.use_wandb else "none",
+        report_to=getattr(config.training, 'report_to', None) or ("wandb" if config.training.use_wandb else "none"),
         seed=config.data.seed,
         deepspeed=deepspeed_config,
         ddp_find_unused_parameters=False,
@@ -279,6 +279,7 @@ def run(config: Config):
         batch_eval_metrics=True,
         remove_unused_columns=config.training.remove_unused_columns,
         ignore_data_skip=True,
+        run_name=config.training.run_name
     )
 
     # Create trainer

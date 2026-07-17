@@ -175,8 +175,8 @@ class FinetuneConfig:
     variable consumed by MLflowCallback.  Ignored when report_to != "mlflow".
     """
     
-    mlflow_run_id: str | None = None
-    """ID of the MLflow run. Maps to the MLFLOW_RUN_ID environment variable 
+    run_name: str | None = None
+    """Name of the run. Maps to the MLFLOW_RUN_NAME environment variable 
     consumed by MLflowCallback. Ignored when report_to != "mlflow"."""
 
     max_steps: int = 10000

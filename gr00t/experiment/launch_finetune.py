@@ -123,8 +123,7 @@ if __name__ == "__main__":
     config.training.save_best_eval_metric_greater_is_better = (
         ft_config.save_best_eval_metric_greater_is_better
     )
-    config.training.enable_open_loop_eval = ft_config.enable_open_loop_eval
-    config.training.open_loop_eval_num_traj_ids = ft_config.open_loop_eval_num_traj_ids
+    config.training.run_name = ft_config.run_name
     config.training.weight_decay = ft_config.weight_decay
     config.training.warmup_ratio = ft_config.warmup_ratio
     config.training.wandb_project = ft_config.wandb_project
