@@ -340,6 +340,8 @@ def main(args: ArgsConfig):
             continue
 
         logging.info(f"Running trajectory: {traj_id}")
+        # Format save_plot_path with current trajectory ID
+        formatted_save_path = args.save_plot_path.format(traj_id=traj_id) if args.save_plot_path else None
         mse, mae = evaluate_single_trajectory(
             policy,
             dataset,
@@ -348,7 +350,7 @@ def main(args: ArgsConfig):
             args.modality_keys,
             steps=args.steps,
             action_horizon=args.action_horizon,
-            save_plot_path=args.save_plot_path,
+            save_plot_path=formatted_save_path,
         )
         logging.info(f"MSE for trajectory {traj_id}: {mse}, MAE: {mae}")
         all_mse.append(mse)
