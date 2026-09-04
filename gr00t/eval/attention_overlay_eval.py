@@ -204,7 +204,8 @@ class ImageAttentionCapture:
         self._backbone_forward = bb.forward
 
         def spy(vl_input):
-            grid = vl_input.get("image_grid_thw") if isinstance(vl_input, dict) else None
+            # grid = vl_input.get("image_grid_thw") if isinstance(vl_input, dict) else None
+            grid = vl_input["image_grid_thw"] if "image_grid_thw" in vl_input else None
             out = self._backbone_forward(vl_input)
             self.image_mask = out["image_mask"].detach()
             if grid is not None:
@@ -900,8 +901,8 @@ def main(cfg: ArgsConfig) -> None:
     dataset = LeRobotEpisodeLoader(
         dataset_path=cfg.dataset_path,
         modality_configs=modality,
-        video_backend="torchcodec",
-        video_backend_kwargs=None,
+        # video_backend="torchcodec",
+        # video_backend_kwargs=None,
     )
     logging.info(f"Dataset length: {len(dataset)}")
 
