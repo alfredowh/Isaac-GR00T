@@ -122,6 +122,18 @@ class Gr00tN1d7Config(PretrainedConfig):
     # Multi-embodiment parameters
     max_num_embodiments: int = 32
 
+    # Pose-estimation auxiliary head (see gr00t/model/gr00t_n1d7/gr00t_n1d7.py:PoseAuxHead).
+    # Regresses the per-timestep subtask target pose from shared vision-language + state
+    # features, purely as a training-time regularizer: it never feeds the action decoder and is
+    # never invoked by get_action()/get_action_with_features(), so it has zero effect on
+    # inference latency or the served action_dim -- see the 2026-09-24 design discussion in
+    # docs/pose_estimation_summary.md for why this was chosen over folding the pose into the
+    # action vector.
+    predict_target_pose: bool = False
+    target_pose_dim: int = 12  # 2 arms x [x, y, z, rx, ry, rz] rotation-vector, robot-base frame
+    pose_head_hidden_dim: int = 512
+    lambda_pose: float = 0.1  # weight of pose_loss in the combined loss
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         for key, value in kwargs.items():

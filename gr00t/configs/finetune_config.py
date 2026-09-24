@@ -63,6 +63,28 @@ class FinetuneConfig:
     Dropout probability applied to state inputs for regularization during training.
     """
 
+    # --- Pose-estimation auxiliary head ---
+    predict_target_pose: bool = False
+    """If True, add the pose-estimation auxiliary head (regresses the per-timestep subtask
+    target pose from shared vision-language + state features). Requires the dataset to have a
+    `pose_target` modality registered (see config/GR00T/dual_ur5e_config.py) and the
+    `observation.target_pose` column produced by
+    data_processing/pose_estimation/prepare_aux_head_dataset.py. Has no effect on inference
+    (get_action never calls the head) or on served action_dim -- purely a training-time
+    regularizer, unlike the folded-into-action-vector alternative."""
+
+    lambda_pose: float = 0.1
+    """Weight of the pose auxiliary loss in the combined loss: loss = action_loss + lambda_pose *
+    pose_loss. Only used when predict_target_pose is True."""
+
+    target_pose_dim: int = 12
+    """Width of the target-pose label: 2 arms x [x, y, z, rx, ry, rz] rotation-vector, robot-base
+    frame. Only used when predict_target_pose is True."""
+
+    pose_head_hidden_dim: int = 512
+    """Hidden dimension of the pose auxiliary head's MLP. Only used when predict_target_pose is
+    True."""
+
     # --- Data Augmentation ---
     random_rotation_angle: int | None = None
     """Maximum rotation angle (in degrees) for random rotation augmentation of input images."""

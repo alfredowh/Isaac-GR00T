@@ -624,6 +624,24 @@ class Gr00tN1d7Processor(BaseProcessor):
             normalized_actions = None
             action_mask = None
 
+        # Target pose for the pose-estimation auxiliary head (optional -- only present when
+        # `pose_target` is configured for this embodiment and the dataset has the column; see
+        # data_processing/pose_estimation/prepare_aux_head_dataset.py and
+        # Gr00tN1d7ActionHead.forward()'s use of config.predict_target_pose). Unlike action/state
+        # this is never normalized or relative-converted: it is a plain regression target, not
+        # something the flow-matching head or state encoder consumes.
+        pose_target_config = self.modality_configs[embodiment_tag.value].get("pose_target")
+        if pose_target_config is not None and content.pose_targets:
+            pose_target_keys = pose_target_config.modality_keys
+            pose_target = np.concatenate(
+                [content.pose_targets[key] for key in pose_target_keys], axis=-1
+            )  # (delta_indices, pose_dim) -- pose_target modality_config uses delta_indices=[0]
+            transformed_inputs_target_pose = torch.from_numpy(pose_target[0]).to(
+                torch.get_default_dtype()
+            )
+        else:
+            transformed_inputs_target_pose = None
+
         # Concatenate states with optional dropout/noise augmentation
         state_keys = self.modality_configs[embodiment_tag.value]["state"].modality_keys
         exclude_state = self.exclude_state or getattr(
@@ -682,6 +700,8 @@ class Gr00tN1d7Processor(BaseProcessor):
         transformed_inputs.update(vlm_inputs)
         if action_mask is not None:
             transformed_inputs["action_mask"] = action_mask
+        if transformed_inputs_target_pose is not None:
+            transformed_inputs["target_pose"] = transformed_inputs_target_pose
         transformed_inputs["embodiment_id"] = self.embodiment_id_mapping[embodiment_tag.value]
         return transformed_inputs
 

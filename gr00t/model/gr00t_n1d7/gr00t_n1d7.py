@@ -35,6 +35,43 @@ from gr00t.model.modules.embodiment_conditioned_mlp import (
 logger = logging.getLogger(__name__)
 
 
+class PoseAuxHead(nn.Module):
+    """Regresses the per-timestep subtask target pose from shared vision-language + state
+    features -- an auxiliary regularizer, not a component of the flow-matching action path.
+
+    Deliberately does NOT see the DiT trunk's output: that output is conditioned on the noised
+    action trajectory at a random flow-matching timestep, which would make the pose estimate
+    depend on the specific noise draw for no benefit. Pooling `vl_embeds`/`state_features`
+    directly keeps the auxiliary task's gradient purely a regularizer on the shared
+    vision-language + state representation, mirroring the auxiliary object-detection head
+    GR00T N1/N1.5 was trained with (also never invoked at inference).
+    """
+
+    def __init__(
+        self, backbone_embedding_dim: int, input_embedding_dim: int, hidden_dim: int, pose_dim: int
+    ):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(backbone_embedding_dim + input_embedding_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, pose_dim),
+        )
+
+    def forward(
+        self,
+        vl_embeds: torch.Tensor,
+        vl_attn_mask: torch.Tensor,
+        state_features: torch.Tensor,
+    ) -> torch.Tensor:
+        mask = vl_attn_mask.unsqueeze(-1).to(vl_embeds.dtype)
+        pooled_vl = (vl_embeds * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1e-6)
+        pooled_state = state_features.mean(dim=1)
+        features = torch.cat([pooled_vl, pooled_state], dim=-1)
+        return self.mlp(features)
+
+
 class Gr00tN1d7ActionHead(nn.Module):
     """Action head component for flow matching diffusion policy."""
 
@@ -114,6 +151,17 @@ class Gr00tN1d7ActionHead(nn.Module):
             torch.tensor(float(config.noise_beta_beta), dtype=torch.float32, device="cpu"),
         )
         self.num_timestep_buckets = config.num_timestep_buckets
+
+        self.predict_target_pose = config.predict_target_pose
+        self.lambda_pose = config.lambda_pose
+        if self.predict_target_pose:
+            self.pose_head = PoseAuxHead(
+                backbone_embedding_dim=config.backbone_embedding_dim,
+                input_embedding_dim=self.input_embedding_dim,
+                hidden_dim=config.pose_head_hidden_dim,
+                pose_dim=config.target_pose_dim,
+            )
+
         self.set_trainable_parameters(
             config.tune_projector, config.tune_diffusion_model, config.tune_vlln
         )
@@ -132,6 +180,8 @@ class Gr00tN1d7ActionHead(nn.Module):
             self.action_decoder.requires_grad_(False)
             if self.config.add_pos_embed:
                 self.position_embedding.requires_grad_(False)
+            if self.predict_target_pose:
+                self.pose_head.requires_grad_(False)
         if not tune_diffusion_model:
             self.model.requires_grad_(False)
         if not tune_vlln:
@@ -161,6 +211,8 @@ class Gr00tN1d7ActionHead(nn.Module):
                 self.action_decoder.eval()
                 if self.config.add_pos_embed:
                     self.position_embedding.eval()
+                if self.predict_target_pose:
+                    self.pose_head.eval()
             if not self.tune_diffusion_model:
                 self.model.eval()
             if not self.tune_vlln:
@@ -277,13 +329,26 @@ class Gr00tN1d7ActionHead(nn.Module):
         action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
         loss = action_loss.sum() / (action_mask.sum() + 1e-6)
 
-        return {
+        output = {
             "loss": loss,
             "action_loss": action_loss,
             "action_mask": action_mask,
             "backbone_features": vl_embeds,
             "state_features": state_features,
         }
+
+        # Pose auxiliary loss -- independent of the flow-matching computation above, so it runs
+        # regardless of the sampled noise/timestep. `target_pose` is only present in `action_input`
+        # when the dataset actually has the column (see processing_gr00t_n1d7.py); skip silently
+        # otherwise so this is a no-op for any embodiment that hasn't opted in.
+        if self.predict_target_pose and "target_pose" in action_input:
+            pred_pose = self.pose_head(vl_embeds, vl_attn_mask, state_features)
+            target_pose = action_input.target_pose
+            pose_loss = F.mse_loss(pred_pose, target_pose)
+            output["pose_loss"] = pose_loss
+            output["loss"] = output["loss"] + self.lambda_pose * pose_loss
+
+        return output
 
     def _encode_features(
         self, backbone_output: BatchFeature, action_input: BatchFeature

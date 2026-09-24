@@ -56,10 +56,12 @@ LEROBOT_MODALITY_FILENAME = "modality.json"
 LEROBOT_STATS_FILE_NAME = "stats.json"
 LEROBOT_RELATIVE_STATS_FILE_NAME = "relative_stats.json"
 
-ALLOWED_MODALITIES = ["video", "state", "action", "language", "mask"]
+ALLOWED_MODALITIES = ["video", "state", "action", "language", "mask", "pose_target"]
 DEFAULT_COLUMN_NAMES = {
     "state": "observation.state",
     "action": "action",
+    # Written by data_processing/pose_estimation/prepare_aux_head_dataset.py.
+    "pose_target": "observation.target_pose",
 }
 
 LANG_KEYS = ["task", "sub_task"]
@@ -383,8 +385,10 @@ class LeRobotEpisodeLoader:
                     lambda x: self.tasks_map[x]
                 )
 
-        # Extract joint groups for state and action modalities
-        for modality_type in ["state", "action"]:
+        # Extract joint groups for state, action and pose_target modalities -- all three are
+        # flat per-row parquet columns sliced by meta/modality.json, unlike video/mask which are
+        # separate files.
+        for modality_type in ["state", "action", "pose_target"]:
             if modality_type not in self.modality_configs:
                 continue
             joint_groups_df = self._extract_joint_groups(

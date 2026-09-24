@@ -63,6 +63,10 @@ class VLAStepData:
     ]  # state_name -> np.ndarray (dim,) for single step or (horizon, dim) for trajectory
     actions: dict[str, np.ndarray]  # action_name -> np.ndarray (horizon, dim) for action chunk
     masks: dict[str, list[np.ndarray]] | None = None  # view_name -> list[np.ndarray] (H, W)
+    pose_targets: dict[str, np.ndarray] | None = None  # pose_name -> np.ndarray (horizon, 6);
+    # per-timestep subtask target pose, for the pose-estimation auxiliary loss. Distinct from
+    # `states`/`actions`: it is never fed to the state encoder or the flow-matching action head,
+    # only to Gr00tN1d7ActionHead's optional pose auxiliary head (see config.predict_target_pose).
     text: str | None = None  # Optional task description or instruction
     embodiment: EmbodimentTag = (
         EmbodimentTag.NEW_EMBODIMENT

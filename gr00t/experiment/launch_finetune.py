@@ -79,6 +79,10 @@ if __name__ == "__main__":
     config.model.tune_projector = ft_config.tune_projector
     config.model.tune_diffusion_model = ft_config.tune_diffusion_model
     config.model.state_dropout_prob = ft_config.state_dropout_prob
+    config.model.predict_target_pose = ft_config.predict_target_pose
+    config.model.lambda_pose = ft_config.lambda_pose
+    config.model.target_pose_dim = ft_config.target_pose_dim
+    config.model.pose_head_hidden_dim = ft_config.pose_head_hidden_dim
     config.model.random_rotation_angle = ft_config.random_rotation_angle
     config.model.color_jitter_params = ft_config.color_jitter_params
     config.model.use_percentiles = ft_config.use_percentiles
