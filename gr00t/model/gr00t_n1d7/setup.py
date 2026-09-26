@@ -89,6 +89,17 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 state_dropout_prob=self.config.model.state_dropout_prob,
                 backbone_trainable_params_fp32=self.config.model.backbone_trainable_params_fp32,
                 load_bf16=self.config.model.load_bf16,
+                # Pose-estimation auxiliary head (see docs/pose_estimation_summary.md). Without
+                # forwarding these, a checkpoint's own config.json (which predates this feature
+                # for every base model fine-tuned from so far) silently wins via
+                # PretrainedConfig.from_pretrained's kwarg-merging, so --predict-target-pose is a
+                # complete no-op on this branch -- confirmed experimentally: pose_head is never
+                # constructed and its weights never end up in the saved checkpoint, even though
+                # training runs to completion with no error.
+                predict_target_pose=self.config.model.predict_target_pose,
+                lambda_pose=self.config.model.lambda_pose,
+                target_pose_dim=self.config.model.target_pose_dim,
+                pose_head_hidden_dim=self.config.model.pose_head_hidden_dim,
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
                 output_loading_info=True,
                 **self.transformers_loading_kwargs,
@@ -105,7 +116,14 @@ class Gr00tN1d7Pipeline(ModelPipeline):
 
             unexpected_keys = loading_info.get("unexpected_keys", [])
             mismatched_keys = loading_info.get("mismatched_keys", [])
-            other_missing = [k for k in missing_keys if "mask_token" not in k]
+            # pose_head is a new, intentionally-untrained module when fine-tuning with
+            # --predict-target-pose from a checkpoint that predates the pose-estimation
+            # auxiliary head (i.e. every checkpoint so far) -- from_pretrained already leaves
+            # it at its random nn.Module init, same as mask_token above; only the error-tolerance
+            # here needs to know that's expected, not a real checkpoint/config mismatch.
+            other_missing = [
+                k for k in missing_keys if "mask_token" not in k and "pose_head" not in k
+            ]
             errors = []
             if other_missing:
                 errors.append(f"Missing keys ({len(other_missing)}): {other_missing}")

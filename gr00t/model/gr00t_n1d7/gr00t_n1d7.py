@@ -539,6 +539,34 @@ class Gr00tN1d7ActionHead(nn.Module):
             options=options,
         )
 
+    @torch.no_grad()
+    def predict_pose(
+        self, backbone_output: BatchFeature, action_input: BatchFeature
+    ) -> torch.Tensor:
+        """Run the pose auxiliary head standalone, for evaluating/visualizing the
+        pose-estimation design (see docs/pose_estimation_summary.md) -- NOT part
+        of the served policy. Unlike ``get_action``, this needs no denoising loop:
+        ``pose_head`` only pools ``vl_embeds``/``state_features``, both available
+        straight from ``_encode_features``.
+
+        Named ``predict_pose`` rather than ``predict_target_pose`` because this
+        instance already has a ``self.predict_target_pose`` *bool* (the config
+        flag, set in ``__init__``) -- a same-named method here would silently
+        shadow it instead of overriding, and calling it would `TypeError` on
+        the bool (confirmed experimentally).
+        """
+        if not self.predict_target_pose:
+            raise RuntimeError(
+                "predict_pose() called but this model's config has "
+                "predict_target_pose=False (no pose_head was constructed)."
+            )
+        features = self._encode_features(backbone_output, action_input)
+        return self.pose_head(
+            features.backbone_features,
+            backbone_output.backbone_attention_mask,
+            features.state_features,
+        )
+
     @property
     def device(self):
         return next(iter(self.parameters())).device
@@ -677,6 +705,15 @@ class Gr00tN1d7(PreTrainedModel):
         action_outputs = self.action_head.get_action(backbone_outputs, action_inputs, options)
 
         return action_outputs
+
+    def predict_target_pose(self, inputs: dict) -> torch.Tensor:
+        """Run the pose auxiliary head standalone (see
+        ``Gr00tN1d7ActionHead.predict_target_pose``) -- for evaluating/visualizing
+        the pose-estimation design, never called by the served policy.
+        """
+        backbone_inputs, action_inputs = self.prepare_input(inputs)
+        backbone_outputs = self.backbone(backbone_inputs)
+        return self.action_head.predict_pose(backbone_outputs, action_inputs)
 
     @property
     def device(self):

@@ -377,6 +377,54 @@ class Gr00tPolicy(BasePolicy):
                     f"Language batch item must be a string. Got {type(batch_item[0])}"
                 )
 
+    def _collate_observation(
+        self, observation: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[dict[str, np.ndarray]]]:
+        """Steps 1-3 shared by ``_get_action`` and ``predict_target_pose``: unbatch,
+        run each observation through the VLA processor, and collate into one
+        model-input batch. Returns the collated inputs plus the per-sample raw
+        states (only ``_get_action`` needs the latter, to unnormalize the action).
+        """
+        unbatched_observations = self._unbatch_observation(observation)
+        processed_inputs = []
+        states = []
+        for obs in unbatched_observations:
+            vla_step_data = self._to_vla_step_data(obs)
+            states.append(vla_step_data.states)  # dict[str, np.ndarray[np.float32, (T, D)]]
+            messages = [{"type": MessageType.EPISODE_STEP.value, "content": vla_step_data}]
+            processed_inputs.append(self.processor(messages))
+
+        collated_inputs = self.collate_fn(processed_inputs)
+        collated_inputs = _rec_to_dtype(collated_inputs, dtype=torch.bfloat16)
+        return collated_inputs, states
+
+    def predict_target_pose(self, observation: dict[str, Any]) -> dict[str, np.ndarray]:
+        """Run the pose-estimation auxiliary head (see
+        ``docs/pose_estimation_summary.md``) on `observation`, returning
+        ``{modality_key: (B, 6) array}`` per arm in the robot-base frame --
+        unnormalized, since the aux head's label was never normalized either
+        (see ``processing_gr00t_n1d7.py``). Requires a checkpoint trained with
+        ``--predict-target-pose`` and a ``pose_target`` modality (raises
+        otherwise); never called by :meth:`get_action`.
+        """
+        if "pose_target" not in self.modality_configs:
+            raise ValueError(
+                "This checkpoint's embodiment has no 'pose_target' modality configured -- "
+                "it was not trained with the pose-estimation auxiliary head."
+            )
+        collated_inputs, _ = self._collate_observation(observation)
+        with torch.inference_mode():
+            pred_pose = self.model.predict_target_pose(**collated_inputs)
+        pred_pose = pred_pose.float().cpu().numpy()
+
+        pose_keys = self.modality_configs["pose_target"].modality_keys
+        outputs = {}
+        offset = 0
+        for key in pose_keys:
+            outputs[key] = pred_pose[:, offset : offset + 6]
+            offset += 6
+        return outputs
+
     def _get_action(
         self, observation: dict[str, Any], options: dict[str, Any] | None = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -396,21 +444,8 @@ class Gr00tPolicy(BasePolicy):
         Returns:
             Tuple of (actions_dict, info_dict)
         """
-        # Step 1: Split batched observation into individual observations
-        unbatched_observations = self._unbatch_observation(observation)
-        processed_inputs = []
-
-        # Step 2: Process each observation through the VLA processor
-        states = []
-        for obs in unbatched_observations:
-            vla_step_data = self._to_vla_step_data(obs)
-            states.append(vla_step_data.states)  # dict[str, np.ndarray[np.float32, (T, D)]]
-            messages = [{"type": MessageType.EPISODE_STEP.value, "content": vla_step_data}]
-            processed_inputs.append(self.processor(messages))
-
-        # Step 3: Collate processed inputs into a single batch for model
-        collated_inputs = self.collate_fn(processed_inputs)
-        collated_inputs = _rec_to_dtype(collated_inputs, dtype=torch.bfloat16)
+        # Steps 1-3: unbatch, process, collate.
+        collated_inputs, states = self._collate_observation(observation)
 
         # Step 4: Run model inference to predict actions
         with torch.inference_mode():
