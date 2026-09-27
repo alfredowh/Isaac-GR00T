@@ -84,8 +84,10 @@ Caveats worth keeping in mind
   infinitesimal perturbations, and are known to be noisy for large models. In practice on this
   checkpoint the gradient maps are markedly more scattered and harder to read than the
   attention maps; do not assume the higher resolution means more insight.
-- Only image-attending layers are captured for attention; text/state contributions are
-  invisible in both modes.
+- `AttentionBackend(..., capture_text=True)` also captures the DiT's text-attending layers via
+  `TextAttentionCapture`, giving per-language-token scores (`last_language_tokens`) alongside the
+  image ones. State is still invisible in both modes: it enters the DiT as part of
+  `hidden_states`/state tokens, not as anything either capture hooks.
 - Averaging over 8 layers and all heads hides disagreement between them. Use --layers to
   inspect a single layer if a specific one is of interest.
 
@@ -144,83 +146,19 @@ warnings.simplefilter("ignore", category=FutureWarning)
 # --------------------------------------------------------------------------------------
 
 
-class ImageAttentionCapture:
-    """Hooks the DiT's image cross-attention blocks and accumulates per-image-token scores.
+class _AttentionScoreAccumulator:
+    """Shared softmax-recompute + accumulate machinery for one set of DiT cross-attention hooks.
 
-    Usage:
-        cap = ImageAttentionCapture(policy, layers=None)
-        cap.attach()
-        cap.reset()
-        policy.get_action(obs)          # may run several denoising steps; all are accumulated
-        scores = cap.mean_scores()      # (S,) float32, one score per backbone token
-        cap.detach()
+    Identical whether the hooked blocks cross-attend to image or non-image (language) tokens --
+    both are ``AlternateVLDiT``'s even-index blocks calling the same ``attn1`` cross-attention
+    with a different ``encoder_attention_mask`` (dit.py:389-404). Factored out of
+    :class:`ImageAttentionCapture` so :class:`TextAttentionCapture` (language/instruction tokens)
+    reuses the exact same recompute instead of a second copy of it.
     """
 
-    def __init__(self, policy: Gr00tPolicy, layers: list[int] | None = None):
-        self.policy = policy
-        self.dit = self._find_dit(policy.model)
-        self.image_layers = self._image_layer_indices(self.dit)
-        if layers:
-            unknown = sorted(set(layers) - set(self.image_layers))
-            if unknown:
-                raise ValueError(
-                    f"--layers {unknown} are not image cross-attention layers. "
-                    f"Available: {self.image_layers}"
-                )
-            self.layers = sorted(layers)
-        else:
-            self.layers = list(self.image_layers)
-
-        self._handles: list[Any] = []
+    def __init__(self) -> None:
         self._sum: torch.Tensor | None = None
         self._n = 0
-        # Captured from the backbone so tokens can be mapped back to cameras.
-        self.image_mask: torch.Tensor | None = None
-        self.image_grid_thw: torch.Tensor | None = None
-        self._backbone_forward = None
-
-    @staticmethod
-    def _find_dit(model: torch.nn.Module) -> torch.nn.Module:
-        for _, mod in model.named_modules():
-            if type(mod).__name__ == "AlternateVLDiT":
-                return mod
-        raise RuntimeError("AlternateVLDiT not found; this script targets the GR00T N1.7 DiT.")
-
-    @staticmethod
-    def _image_layer_indices(dit: torch.nn.Module) -> list[int]:
-        """Mirrors AlternateVLDiT.forward's block routing (dit.py:378-399)."""
-        n = int(getattr(dit, "attend_text_every_n_blocks", 2))
-        total = len(dit.transformer_blocks)
-        return [i for i in range(total) if i % 2 == 0 and i % (2 * n) != 0]
-
-    def attach(self) -> None:
-        for idx in self.layers:
-            attn = self.dit.transformer_blocks[idx].attn1
-            self._handles.append(
-                attn.register_forward_pre_hook(self._make_hook(attn), with_kwargs=True)
-            )
-        # Spy on the backbone to grab image_mask / image_grid_thw for this observation.
-        bb = self.policy.model.backbone
-        self._backbone_forward = bb.forward
-
-        def spy(vl_input):
-            # grid = vl_input.get("image_grid_thw") if isinstance(vl_input, dict) else None
-            grid = vl_input["image_grid_thw"] if "image_grid_thw" in vl_input else None
-            out = self._backbone_forward(vl_input)
-            self.image_mask = out["image_mask"].detach()
-            if grid is not None:
-                self.image_grid_thw = grid.detach()
-            return out
-
-        bb.forward = spy
-
-    def detach(self) -> None:
-        for h in self._handles:
-            h.remove()
-        self._handles.clear()
-        if self._backbone_forward is not None:
-            self.policy.model.backbone.forward = self._backbone_forward
-            self._backbone_forward = None
 
     def reset(self) -> None:
         self._sum = None
@@ -284,6 +222,91 @@ class ImageAttentionCapture:
             return None
         return (self._sum / self._n).cpu().numpy().astype(np.float32)
 
+
+class ImageAttentionCapture(_AttentionScoreAccumulator):
+    """Hooks the DiT's image cross-attention blocks and accumulates per-image-token scores.
+
+    Usage:
+        cap = ImageAttentionCapture(policy, layers=None)
+        cap.attach()
+        cap.reset()
+        policy.get_action(obs)          # may run several denoising steps; all are accumulated
+        scores = cap.mean_scores()      # (S,) float32, one score per backbone token
+        cap.detach()
+    """
+
+    def __init__(self, policy: Gr00tPolicy, layers: list[int] | None = None):
+        super().__init__()
+        self.policy = policy
+        self.dit = self._find_dit(policy.model)
+        self.image_layers = self._image_layer_indices(self.dit)
+        if layers:
+            unknown = sorted(set(layers) - set(self.image_layers))
+            if unknown:
+                raise ValueError(
+                    f"--layers {unknown} are not image cross-attention layers. "
+                    f"Available: {self.image_layers}"
+                )
+            self.layers = sorted(layers)
+        else:
+            self.layers = list(self.image_layers)
+
+        self._handles: list[Any] = []
+        # Captured from the backbone so tokens can be mapped back to cameras (image_mask,
+        # image_grid_thw) or, for a sibling TextAttentionCapture, decoded back to text
+        # (input_ids) -- see that class's docstring for why it reads these here instead of
+        # spying on the backbone a second time.
+        self.image_mask: torch.Tensor | None = None
+        self.image_grid_thw: torch.Tensor | None = None
+        self.input_ids: torch.Tensor | None = None
+        self._backbone_forward = None
+
+    @staticmethod
+    def _find_dit(model: torch.nn.Module) -> torch.nn.Module:
+        for _, mod in model.named_modules():
+            if type(mod).__name__ == "AlternateVLDiT":
+                return mod
+        raise RuntimeError("AlternateVLDiT not found; this script targets the GR00T N1.7 DiT.")
+
+    @staticmethod
+    def _image_layer_indices(dit: torch.nn.Module) -> list[int]:
+        """Mirrors AlternateVLDiT.forward's block routing (dit.py:378-399)."""
+        n = int(getattr(dit, "attend_text_every_n_blocks", 2))
+        total = len(dit.transformer_blocks)
+        return [i for i in range(total) if i % 2 == 0 and i % (2 * n) != 0]
+
+    def attach(self) -> None:
+        for idx in self.layers:
+            attn = self.dit.transformer_blocks[idx].attn1
+            self._handles.append(
+                attn.register_forward_pre_hook(self._make_hook(attn), with_kwargs=True)
+            )
+        # Spy on the backbone to grab image_mask / image_grid_thw / input_ids for this observation.
+        bb = self.policy.model.backbone
+        self._backbone_forward = bb.forward
+
+        def spy(vl_input):
+            # grid = vl_input.get("image_grid_thw") if isinstance(vl_input, dict) else None
+            grid = vl_input["image_grid_thw"] if "image_grid_thw" in vl_input else None
+            ids = vl_input["input_ids"] if "input_ids" in vl_input else None
+            out = self._backbone_forward(vl_input)
+            self.image_mask = out["image_mask"].detach()
+            if grid is not None:
+                self.image_grid_thw = grid.detach()
+            if ids is not None:
+                self.input_ids = ids.detach()
+            return out
+
+        bb.forward = spy
+
+    def detach(self) -> None:
+        for h in self._handles:
+            h.remove()
+        self._handles.clear()
+        if self._backbone_forward is not None:
+            self.policy.model.backbone.forward = self._backbone_forward
+            self._backbone_forward = None
+
     # -- token -> camera mapping ---------------------------------------------------------
 
     def per_camera_maps(self, scores: np.ndarray, n_cameras: int) -> list[np.ndarray] | None:
@@ -324,6 +347,89 @@ class ImageAttentionCapture:
         return int(getattr(vcfg, "spatial_merge_size", 2) or 2)
 
 
+class TextAttentionCapture(_AttentionScoreAccumulator):
+    """Hooks the DiT's text (non-image) cross-attention blocks and accumulates per-token scores
+    over the language/instruction input -- the language counterpart of
+    :class:`ImageAttentionCapture`, filling the gap the module docstring calls out under
+    "Caveats": *"Only image-attending layers are captured for attention; text/state contributions
+    are invisible in both modes."*
+
+    Reads ``image_mask`` / ``input_ids`` off an already-attached sibling
+    :class:`ImageAttentionCapture` instead of spying on the backbone itself, so the two captures
+    share one ``backbone.forward`` wrap rather than nesting two (nesting would make ``detach()``
+    order-sensitive and easy to get wrong).
+
+    Usage: mirrors ImageAttentionCapture --
+        cap = TextAttentionCapture(policy, image_capture)
+        cap.attach(); cap.reset(); policy.get_action(obs); scores = cap.mean_scores()
+        ids, tok_scores = cap.language_tokens(scores)
+        cap.detach()
+    """
+
+    def __init__(
+        self,
+        policy: Gr00tPolicy,
+        image_capture: ImageAttentionCapture,
+        layers: list[int] | None = None,
+    ):
+        super().__init__()
+        self.policy = policy
+        self.image_capture = image_capture
+        self.dit = image_capture.dit
+        self.text_layers = self._text_layer_indices(self.dit)
+        if layers:
+            unknown = sorted(set(layers) - set(self.text_layers))
+            if unknown:
+                raise ValueError(
+                    f"--layers {unknown} are not text cross-attention layers. "
+                    f"Available: {self.text_layers}"
+                )
+            self.layers = sorted(layers)
+        else:
+            self.layers = list(self.text_layers)
+        self._handles: list[Any] = []
+
+    @staticmethod
+    def _text_layer_indices(dit: torch.nn.Module) -> list[int]:
+        """The complement of ImageAttentionCapture._image_layer_indices -- AlternateVLDiT.forward's
+        ``idx % (2 * attend_text_every_n_blocks) == 0`` branch (dit.py:391-393)."""
+        n = int(getattr(dit, "attend_text_every_n_blocks", 2))
+        total = len(dit.transformer_blocks)
+        return [i for i in range(total) if i % 2 == 0 and i % (2 * n) == 0]
+
+    def attach(self) -> None:
+        for idx in self.layers:
+            attn = self.dit.transformer_blocks[idx].attn1
+            self._handles.append(
+                attn.register_forward_pre_hook(self._make_hook(attn), with_kwargs=True)
+            )
+
+    def detach(self) -> None:
+        for h in self._handles:
+            h.remove()
+        self._handles.clear()
+
+    # -- token -> language mapping --------------------------------------------------------
+
+    def language_tokens(self, scores: np.ndarray | None) -> tuple[np.ndarray, np.ndarray] | None:
+        """Non-image token ids and their mean cross-attention `scores`, in sequence order.
+
+        `scores` is one score per backbone token (same layout as
+        :meth:`ImageAttentionCapture.mean_scores`'s output) -- this just restricts it to the
+        positions the sibling ``image_capture``'s ``image_mask`` marks as non-image, using its
+        captured ``input_ids`` to say which token each of those positions actually is.
+        """
+        image_mask = self.image_capture.image_mask
+        input_ids = self.image_capture.input_ids
+        if scores is None or image_mask is None or input_ids is None:
+            return None
+        idx = torch.where(~image_mask[0])[0].cpu().numpy()
+        if idx.size == 0:
+            return None
+        token_ids = input_ids[0].cpu().numpy()[idx]
+        return token_ids, scores[idx]
+
+
 # --------------------------------------------------------------------------------------
 # Saliency backends
 # --------------------------------------------------------------------------------------
@@ -342,11 +448,23 @@ class SaliencyBackend:
 
 
 class AttentionBackend(SaliencyBackend):
-    """DiT action->image cross-attention. Forward-only; unchanged from the original script."""
+    """DiT action->image cross-attention. Forward-only; unchanged from the original script.
+
+    `capture_text=True` additionally attaches a :class:`TextAttentionCapture`, so `compute()`
+    also populates `last_language_tokens` with the language/instruction side of the same
+    attention -- previously invisible (see that class's docstring).
+    """
 
     default_map_shape = (8, 8)
 
-    def __init__(self, policy: Gr00tPolicy, layers: list[int] | None, seed: int = 0):
+    def __init__(
+        self,
+        policy: Gr00tPolicy,
+        layers: list[int] | None,
+        seed: int = 0,
+        capture_text: bool = False,
+        text_layers: list[int] | None = None,
+    ):
         self.policy = policy
         self.seed = seed
         self.capture = ImageAttentionCapture(policy, layers)
@@ -354,18 +472,33 @@ class AttentionBackend(SaliencyBackend):
         self.image_layers = self.capture.image_layers
         self.layers = self.capture.layers
 
+        self.text_capture: TextAttentionCapture | None = None
+        self.last_language_tokens: tuple[np.ndarray, np.ndarray] | None = None
+        if capture_text:
+            self.text_capture = TextAttentionCapture(policy, self.capture, text_layers)
+            self.text_capture.attach()
+            self.text_layers = self.text_capture.text_layers
+
     def compute(self, parsed_obs, n_cameras):
         self.capture.reset()
+        if self.text_capture is not None:
+            self.text_capture.reset()
         # The flow-matching loop starts from torch.randn (gr00t_n1d7.py:335). Without seeding,
         # predictions — and therefore the reported MSE — vary run to run by ~20% on short
         # trajectories, which is enough to swamp small comparisons.
         torch.manual_seed(self.seed)
         raw_action, _ = self.policy.get_action(parsed_obs)
         scores = self.capture.mean_scores()
+        if self.text_capture is not None:
+            self.last_language_tokens = self.text_capture.language_tokens(
+                self.text_capture.mean_scores()
+            )
         return self.capture.per_camera_maps(scores, n_cameras), parse_action_gr00t(raw_action)
 
     def close(self) -> None:
         self.capture.detach()
+        if self.text_capture is not None:
+            self.text_capture.detach()
 
 
 class GradCAMBackend(SaliencyBackend):
